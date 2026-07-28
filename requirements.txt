@@ -1,0 +1,7 @@
+py-cord[voice]>=2.8.0
+edge-tts>=7.0.0
+python-dotenv>=1.0.0
+supabase>=2.7.0
+# Python 3.13+ removed the stdlib `audioop` module; py-cord's voice code still
+# imports it. This shim restores it.
+audioop-lts>=0.2.1; python_version >= "3.13"

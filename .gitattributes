@@ -1,0 +1,15 @@
+# Normalize line endings to LF in the repository, checking out as-is on all platforms
+* text=auto eol=lf
+
+# Force binary for compiled/lock files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.gz binary
+*.zip binary
+
+# Force LF for shell scripts regardless of platform
+*.sh text eol=lf
+*.mjs text eol=lf

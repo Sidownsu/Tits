@@ -1,0 +1,87 @@
+// Minimal Riva TTS proto, sufficient for synthesis + voice discovery.
+//
+// Field numbers and message shapes mirror NVIDIA's published
+// nvidia-riva/common `riva/proto/riva_tts.proto`. Only the parts this bot uses
+// are declared; unused fields are omitted, which is wire-compatible with the
+// full definition (protobuf ignores unknown fields).
+//
+// To vendor the canonical upstream protos instead, run:
+//     npm run fetch-protos
+// which clones nvidia-riva/common into src/nim/protos/vendor/ and takes
+// precedence over this file at load time.
+
+syntax = "proto3";
+
+package nvidia.riva.tts;
+
+// ─── Audio encodings (from riva_audio.proto) ─────────────────────────────────
+enum AudioEncoding {
+  ENCODING_UNSPECIFIED = 0;
+  LINEAR_PCM = 1;
+  FLAC = 2;
+  MULAW = 3;
+  OGGOPUS = 4;
+  ALAW = 20;
+}
+
+message RequestId {
+  string value = 1;
+}
+
+message ZeroShotData {
+  bytes audio_prompt = 1;
+  int32 sample_rate_hz = 2;
+  AudioEncoding encoding = 3;
+  int32 quality = 4;
+  string transcript = 5;
+}
+
+message SynthesizeSpeechRequest {
+  string text = 1;
+  string language_code = 2;
+  AudioEncoding encoding = 3;
+  int32 sample_rate_hz = 4;
+  string voice_name = 5;
+  ZeroShotData zero_shot_data = 6;
+  string custom_dictionary = 7;
+  map<string, string> custom_configuration = 8;
+  RequestId id = 100;
+}
+
+message SynthesizeSpeechResponseMetadata {
+  string text = 1;
+  string processed_text = 2;
+  repeated float predicted_durations = 8;
+}
+
+message SynthesizeSpeechResponse {
+  bytes audio = 1;
+  SynthesizeSpeechResponseMetadata meta = 2;
+  RequestId id = 100;
+}
+
+message RivaSynthesisConfigRequest {
+  string model_name = 1;
+}
+
+message RivaSynthesisConfigResponse {
+  message Config {
+    string model_name = 1;
+    map<string, string> parameters = 2;
+  }
+  repeated Config model_config = 1;
+}
+
+service RivaSpeechSynthesis {
+  // Single-shot synthesis: the whole clip arrives in one response.
+  rpc Synthesize(SynthesizeSpeechRequest) returns (SynthesizeSpeechResponse) {}
+
+  // Streaming synthesis: audio arrives in chunks as it is generated, which is
+  // what keeps time-to-first-audio low in a voice channel.
+  rpc SynthesizeOnline(SynthesizeSpeechRequest)
+      returns (stream SynthesizeSpeechResponse) {}
+
+  // Reports available models and their voices — used for catalogue discovery.
+  rpc GetRivaSynthesisConfig(RivaSynthesisConfigRequest)
+      returns (RivaSynthesisConfigResponse) {}
+}

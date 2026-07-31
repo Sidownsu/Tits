@@ -86,58 +86,96 @@ async def _teardown(proc: subprocess.Popen, feeder: asyncio.Task) -> None:
         pass
 
 
+async def _notify(guild_id: int, msg: str):
+    ch_id = linked_text_channel.get(guild_id)
+    if ch_id:
+        ch = bot.get_channel(ch_id)
+        if ch:
+            try:
+                await ch.send(msg)
+            except Exception:
+                pass
+
+
 async def player_loop(guild: discord.Guild):
     queue = speak_queues[guild.id]
     pending: tuple[subprocess.Popen, asyncio.Task] | None = None
 
-    while True:
-        if pending is not None:
-            proc, feeder = pending
-            pending = None
-        else:
-            item = await queue.get()
-            queue.task_done()
-            proc, feeder = _prep(*item)
+    try:
+        while True:
+            if pending is not None:
+                proc, feeder = pending
+                pending = None
+            else:
+                item = await queue.get()
+                queue.task_done()
+                proc, feeder = _prep(*item)
 
-        vc = guild.voice_client
-        if vc is None or not vc.is_connected():
-            await _teardown(proc, feeder)
-            continue
+            vc = guild.voice_client
+            if vc is None or not vc.is_connected():
+                await _teardown(proc, feeder)
+                continue
 
-        done = asyncio.Event()
+            done = asyncio.Event()
 
-        def _after(err):
-            if err:
-                print(f"[player] playback error: {err}")
-            bot.loop.call_soon_threadsafe(done.set)
+            def _after(err):
+                if err:
+                    print(f"[player] playback error: {err}")
+                bot.loop.call_soon_threadsafe(done.set)
 
-        try:
-            source = discord.PCMAudio(proc.stdout)
-            vc.play(source, after=_after)
-        except Exception as e:
-            print(f"[player] error: {e}")
-            await _teardown(proc, feeder)
-            continue
-
-        done_task = asyncio.create_task(done.wait())
-        next_get = asyncio.create_task(queue.get())
-        finished, _ = await asyncio.wait(
-            {done_task, next_get}, return_when=asyncio.FIRST_COMPLETED
-        )
-
-        if next_get in finished:
-            item2 = next_get.result()
-            queue.task_done()
-            pending = _prep(*item2)
-            await done_task
-        else:
-            next_get.cancel()
             try:
-                await next_get
-            except (asyncio.CancelledError, Exception):
-                pass
+                source = discord.PCMAudio(proc.stdout)
+                vc.play(source, after=_after)
+            except Exception as e:
+                print(f"[player] play error: {e}")
+                await _teardown(proc, feeder)
+                continue
 
-        await _teardown(proc, feeder)
+            done_task = asyncio.create_task(done.wait())
+            next_get = asyncio.create_task(queue.get())
+
+            try:
+                finished, _ = await asyncio.wait_for(
+                    asyncio.wait({done_task, next_get}, return_when=asyncio.FIRST_COMPLETED),
+                    timeout=60.0,
+                )
+            except asyncio.TimeoutError:
+                print(f"[player] watchdog timeout guild={guild.id}, skipping")
+                if vc.is_playing():
+                    vc.stop()
+                done_task.cancel()
+                next_get.cancel()
+                await _teardown(proc, feeder)
+                continue
+
+            if next_get in finished:
+                item2 = next_get.result()
+                queue.task_done()
+                pending = _prep(*item2)
+                await done_task
+            else:
+                next_get.cancel()
+                try:
+                    await next_get
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+            await _teardown(proc, feeder)
+
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        print(f"[player] CRASH guild={guild.id}: {e}")
+        # Clean up VC and notify the text channel
+        vc = guild.voice_client
+        if vc is not None:
+            try:
+                await vc.disconnect(force=True)
+            except Exception:
+                pass
+        linked_text_channel.pop(guild.id, None)
+        player_tasks.pop(guild.id, None)
+        await _notify(guild.id, f"⚠️ Something went wrong and I had to leave the voice channel. Use `/join` to bring me back.")
 
 
 def ensure_player(guild: discord.Guild):
@@ -155,6 +193,21 @@ async def on_ready():
     print(f"Logged in as {bot.user} (id={bot.user.id})")
 
 
+@bot.event
+async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    if member.id != bot.user.id:
+        return
+    # Bot was in a channel and is now gone (kicked, disconnected, moved out)
+    if before.channel is not None and after.channel is None:
+        guild = member.guild
+        print(f"[voice] bot disconnected from VC in guild={guild.id}")
+        task = player_tasks.pop(guild.id, None)
+        if task and not task.done():
+            task.cancel()
+        linked_text_channel.pop(guild.id, None)
+        await _notify(guild.id, "⚠️ I got disconnected from the voice channel. Use `/join` to bring me back.")
+
+
 @bot.slash_command(description="Join your current voice channel and read this text channel aloud.")
 async def join(ctx: discord.ApplicationContext):
     if ctx.author.voice is None or ctx.author.voice.channel is None:
@@ -162,10 +215,18 @@ async def join(ctx: discord.ApplicationContext):
         return
     await ctx.defer()
     vc_channel = ctx.author.voice.channel
-    if ctx.guild.voice_client is None:
-        await vc_channel.connect()
-    else:
-        await ctx.guild.voice_client.move_to(vc_channel)
+    try:
+        if ctx.guild.voice_client is None:
+            await asyncio.wait_for(vc_channel.connect(), timeout=10.0)
+        else:
+            await asyncio.wait_for(ctx.guild.voice_client.move_to(vc_channel), timeout=10.0)
+    except asyncio.TimeoutError:
+        await ctx.followup.send("Couldn't connect to voice channel — timed out. Try again.", ephemeral=True)
+        return
+    except Exception as e:
+        print(f"[join] connect error: {e}")
+        await ctx.followup.send(f"Failed to join voice channel: {e}", ephemeral=True)
+        return
     linked_text_channel[ctx.guild.id] = ctx.channel.id
     ensure_player(ctx.guild)
     await ctx.followup.send(

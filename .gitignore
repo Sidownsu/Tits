@@ -1,0 +1,30 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+npm-debug.log*
+
+# Vendored protos (fetched via `npm run fetch-protos`)
+src/nim/protos/vendor/
+
+# Runtime artifacts
+.cache/
+logs/
+*.log
+
+# Legacy Python prototype
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

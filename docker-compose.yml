@@ -1,0 +1,25 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      CACHE_DIR: /app/.cache/audio
+    volumes:
+      # Persist the audio cache across restarts — regenerating it costs NIM quota.
+      - audio-cache:/app/.cache/audio
+    # Voice encoding is CPU-bound; cap it so one busy guild cannot starve the host.
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+
+volumes:
+  audio-cache:
